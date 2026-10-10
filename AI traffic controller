@@ -1,0 +1,163 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Fuzzy Traffic Light Controller\n",
+    "Mamdani fuzzy inference (9 rules) that outputs green-phase duration (10-90 s) from queue length and waiting time, with emergency vehicle override."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Helper functions"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import numpy as np\n",
+    "\n",
+    "def trimf(x, abc):\n",
+    "    \"\"\"\n",
+    "    Triangular membership function generator.\n",
+    "    \"\"\"\n",
+    "    a, b, c = abc\n",
+    "    y = np.zeros_like(x, dtype=float)\n",
+    "    if a != b:\n",
+    "        i1 = (a <= x) & (x <= b)\n",
+    "        y[i1] = (x[i1] - a) / (b - a)\n",
+    "    if b != c:\n",
+    "        i2 = (b <= x) & (x <= c)\n",
+    "        y[i2] = (c - x[i2]) / (c - b)\n",
+    "    return np.clip(y, 0.0, 1.0)\n",
+    "\n",
+    "def defuzz_centroid(x, mfx):\n",
+    "    \"\"\"\n",
+    "    Center of Gravity (Centroid) defuzzification.\n",
+    "    \"\"\"\n",
+    "    s = np.sum(mfx)\n",
+    "    return np.sum(x * mfx) / s if s != 0 else np.mean(x)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Controller"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "class TrafficFuzzyController:\n",
+    "    def __init__(self):\n",
+    "        # Base universe of discourse for the Green Phase Duration (10s to 90s)\n",
+    "        self.u_dur = np.arange(10, 91, 0.5)\n",
+    "        \n",
+    "        # Consequent membership functions (Duration)\n",
+    "        self.mf_dur = {\n",
+    "            'short': [10.0, 20.0, 30.0],\n",
+    "            'medium': [25.0, 42.5, 60.0],\n",
+    "            'long': [50.0, 70.0, 90.0]\n",
+    "        }\n",
+    "        \n",
+    "        # Antecedent 1 membership functions (Queue Length)\n",
+    "        self.mf_queue = {\n",
+    "            'low': [0.0, 0.0, 15.0],\n",
+    "            'medium': [10.0, 22.5, 35.0],\n",
+    "            'high': [30.0, 50.0, 50.0]\n",
+    "        }\n",
+    "        \n",
+    "        # Antecedent 2 membership functions (Waiting Time)\n",
+    "        self.mf_wait = {\n",
+    "            'short': [0.0, 0.0, 3.0],\n",
+    "            'medium': [2.0, 4.5, 7.0],\n",
+    "            'long': [5.0, 10.0, 10.0]\n",
+    "        }\n",
+    "        \n",
+    "        # 9-Rule Mamdani Inference Activation Matrix\n",
+    "        self.rules = [\n",
+    "            ('low', 'short', 'short'),\n",
+    "            ('low', 'medium', 'short'),\n",
+    "            ('low', 'long', 'medium'),\n",
+    "            ('medium', 'short', 'medium'),\n",
+    "            ('medium', 'medium', 'medium'),\n",
+    "            ('medium', 'long', 'long'),\n",
+    "            ('high', 'short', 'long'),\n",
+    "            ('high', 'medium', 'long'),\n",
+    "            ('high', 'long', 'long')\n",
+    "        ]\n",
+    "\n",
+    "    def compute(self, queue, wait, emergency=False):\n",
+    "        \"\"\"\n",
+    "        Computes the crisp green light duration based on queue length and wait time.\n",
+    "        \"\"\"\n",
+    "        if emergency:\n",
+    "            return 90.0  # Emergency Vehicle Priority (EVP) override\n",
+    "\n",
+    "        # Fuzzify antecedents (find membership degrees)\n",
+    "        mu_q = {k: trimf(np.array([queue]), v)[0] for k, v in self.mf_queue.items()}\n",
+    "        mu_w = {k: trimf(np.array([wait]), v)[0] for k, v in self.mf_wait.items()}\n",
+    "\n",
+    "        # Evaluate 9 Mamdani rules (MIN implication)\n",
+    "        cuts = {'short': 0.0, 'medium': 0.0, 'long': 0.0}\n",
+    "        for q_term, w_term, out_term in self.rules:\n",
+    "            # Alpha is the firing strength of the rule\n",
+    "            alpha = min(mu_q[q_term], mu_w[w_term])\n",
+    "            cuts[out_term] = max(cuts[out_term], alpha)\n",
+    "\n",
+    "        # MAX aggregation (combine truncated membership functions)\n",
+    "        mfx = np.zeros_like(self.u_dur)\n",
+    "        for term, cut in cuts.items():\n",
+    "            mf = trimf(self.u_dur, self.mf_dur[term])\n",
+    "            mfx = np.maximum(mfx, np.minimum(cut, mf))\n",
+    "\n",
+    "        # Centroid defuzzification -> crisp green time in seconds\n",
+    "        return defuzz_centroid(self.u_dur, mfx)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Example usage"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "controller = TrafficFuzzyController()\n",
+    "\n",
+    "tests = [(5, 1), (20, 4), (45, 8), (45, 1), (5, 9)]\n",
+    "for q, w in tests:\n",
+    "    print(f\"queue={q:>3}, wait={w:>3} -> green = {controller.compute(q, w):.2f} s\")\n",
+    "\n",
+    "print(\"Emergency override ->\", controller.compute(20, 4, emergency=True), \"s\")"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "name": "python"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
